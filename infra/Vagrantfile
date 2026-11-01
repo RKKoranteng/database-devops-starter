@@ -1,0 +1,83 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# Local PostgreSQL database for database-devops-starter.
+# All settings and secrets come from vagrant-config.yml, so this file never
+# needs to change. Copy vagrant-config.example.yml to vagrant-config.yml and edit it.
+#
+# Usage:
+#   vagrant up          # create and provision the VM
+#   vagrant provision   # re-apply settings after editing the config file
+#   vagrant halt        # stop the VM
+#   vagrant destroy -f  # delete the VM
+
+require "yaml"
+
+CONFIG_FILE = File.join(__dir__, "vagrant-config.yml")
+
+unless File.exist?(CONFIG_FILE)
+  abort "Missing #{File.basename(CONFIG_FILE)}. " \
+        "Copy vagrant-config.example.yml to vagrant-config.yml and fill in your values."
+end
+
+settings = YAML.safe_load(File.read(CONFIG_FILE)) || {}
+vm_cfg   = settings.fetch("vm", {})
+pg_cfg   = settings.fetch("postgres", {})
+
+required = { "postgres.database" => pg_cfg["database"],
+             "postgres.user"     => pg_cfg["user"],
+             "postgres.password" => pg_cfg["password"] }
+missing = required.select { |_, v| v.nil? || v.to_s.strip.empty? }.keys
+abort "vagrant-config.yml is missing: #{missing.join(', ')}" unless missing.empty?
+
+Vagrant.configure("2") do |config|
+  config.vm.box      = vm_cfg.fetch("box", "bento/ubuntu-24.04")
+  config.vm.hostname = vm_cfg.fetch("hostname", "postgres-dev")
+
+  config.vm.network "forwarded_port", guest: 5432,
+                    host: pg_cfg.fetch("host_port", 5432).to_i,
+                    host_ip: "127.0.0.1", auto_correct: true
+
+  config.vm.provider "virtualbox" do |vb|
+    vb.name   = vm_cfg.fetch("name", "database-devops-starter-postgres")
+    vb.memory = vm_cfg.fetch("memory", 2048).to_i
+    vb.cpus   = vm_cfg.fetch("cpus", 2).to_i
+  end
+
+  config.vm.provision "shell", env: {
+    "PG_DB"       => pg_cfg["database"].to_s,
+    "PG_USER"     => pg_cfg["user"].to_s,
+    "PG_PASSWORD" => pg_cfg["password"].to_s
+  }, inline: <<-SHELL
+    set -euo pipefail
+    export DEBIAN_FRONTEND=noninteractive
+
+    echo ">>> Installing PostgreSQL"
+    apt-get update -qq
+    apt-get install -y -qq postgresql postgresql-contrib
+
+    PG_VER=$(ls /etc/postgresql | sort -V | tail -1)
+    PG_CONF_DIR="/etc/postgresql/${PG_VER}/main"
+
+    echo ">>> Allowing connections from outside the VM"
+    sed -i "s/^#\\?listen_addresses.*/listen_addresses = '*'/" "${PG_CONF_DIR}/postgresql.conf"
+    if ! grep -q "vagrant-dev-access" "${PG_CONF_DIR}/pg_hba.conf"; then
+      echo "host all all 0.0.0.0/0 scram-sha-256  # vagrant-dev-access" >> "${PG_CONF_DIR}/pg_hba.conf"
+    fi
+    systemctl restart postgresql
+
+    echo ">>> Creating role and database"
+    sudo -u postgres psql -v ON_ERROR_STOP=1 \
+      -v pg_user="${PG_USER}" -v pg_password="${PG_PASSWORD}" <<'SQL'
+SELECT format('CREATE ROLE %I LOGIN PASSWORD %L', :'pg_user', :'pg_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'pg_user') \\gexec
+SELECT format('ALTER ROLE %I PASSWORD %L', :'pg_user', :'pg_password') \\gexec
+SQL
+
+    if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='${PG_DB}'" | grep -q 1; then
+      sudo -u postgres createdb -O "${PG_USER}" "${PG_DB}"
+    fi
+
+    echo ">>> PostgreSQL ${PG_VER} ready: database '${PG_DB}', user '${PG_USER}'"
+  SHELL
+end
