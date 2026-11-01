@@ -10,6 +10,7 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 ## [2026.10.31]
 
 ### Added
+- add infrastructure directory
 - add readme (intitial repo doc)
 - changelog to document notable changes to the repository
 - MIT license
