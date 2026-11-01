@@ -24,4 +24,5 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - views
 
 ### Changes
+- move schema directories as subdir inside the schema dir
 - ignore gh-scripts
