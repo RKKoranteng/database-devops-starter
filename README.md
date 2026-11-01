@@ -6,13 +6,9 @@ A starter template for DBA teams who want to ship database changes the same way 
 
 ```
 database-devops-starter/
+├── infra/            # Infrastructure specific code
 ├── pipelines/        # Pipelines for validating, deploying and rolling back changes
-├── tables/           # Table definitions
-├── indexes/          # Index definitions
-├── sequences/        # Sequence definitions
-├── views/            # View definitions
-├── procedures/       # Stored procedures and functions
-├── triggers/         # Trigger definitions
+├── schema/           # Schema definitions (tables, indexes, triggers, etc)
 ├── .gitignore        # Files and folders Git should ignore
 ├── CHANGELOG.md      # Release history and notes
 ├── LICENSE           # MIT License
