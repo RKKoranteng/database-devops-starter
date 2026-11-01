@@ -11,4 +11,16 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 
 ### Added
 - changelog to document notable changes to the repository
-- add MIT license
+- MIT license
+- add .gitignore
+- add pipeline directory
+- add schema specific directories : 
+    - indexes
+    - procedures
+    - sequences
+    - tables
+    - triggers
+    - views
+
+### Changes
+- ignore gh-scripts
