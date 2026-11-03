@@ -1,0 +1,116 @@
+# Creates the owner role and application database with Liquibase.
+#
+# pull_request:       runs the changelog twice against a throwaway Postgres to prove it works and is rerunnable.
+# workflow_dispatch:  runs the changelog against a real instance, using the chosen GitHub environment's secrets.
+#
+# Environment secrets required for workflow_dispatch:
+#   DB_HOST, DB_PORT, DB_ADMIN_USER, DB_ADMIN_PASSWORD, DB_OWNER_PASSWORD
+name: Bootstrap database
+
+on:
+  pull_request:
+    paths:
+      - "infra/postgres/**"
+      - ".github/workflows/bootstrap-database.yml"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "GitHub environment holding the target instance's secrets"
+        required: true
+        default: dev
+      db_name:
+        description: "Database to create"
+        required: true
+        default: app_db
+      db_owner:
+        description: "Role that owns the database"
+        required: true
+        default: app_user
+
+env:
+  LIQUIBASE_IMAGE: liquibase/liquibase:4.29
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run changelog twice
+        run: |
+          for run in 1 2; do
+            echo "::group::liquibase update (run $run)"
+            docker run --rm --network host -v "$PWD:/liquibase/changelog" "$LIQUIBASE_IMAGE" \
+              --search-path=/liquibase/changelog \
+              update \
+              --changelog-file=infra/postgres/changelog.yaml \
+              --url=jdbc:postgresql://localhost:5432/postgres \
+              --username=postgres \
+              --password=postgres \
+              -Downer_password=ci_only_password
+            echo "::endgroup::"
+          done
+
+      - name: Check role and database exist
+        env:
+          PGPASSWORD: postgres
+        run: |
+          test "$(psql -h localhost -U postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname = 'app_user'")" = 1
+          test "$(psql -h localhost -U postgres -tAc "SELECT pg_get_userbyid(datdba) FROM pg_database WHERE datname = 'app_db'")" = app_user
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets are set
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_ADMIN_USER: ${{ secrets.DB_ADMIN_USER }}
+          DB_ADMIN_PASSWORD: ${{ secrets.DB_ADMIN_PASSWORD }}
+          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+        run: |
+          missing=0
+          for name in DB_HOST DB_ADMIN_USER DB_ADMIN_PASSWORD DB_OWNER_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set in environment '${{ inputs.environment }}'"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Liquibase update
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT || '5432' }}
+          DB_ADMIN_USER: ${{ secrets.DB_ADMIN_USER }}
+          DB_ADMIN_PASSWORD: ${{ secrets.DB_ADMIN_PASSWORD }}
+          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+          DB_NAME: ${{ inputs.db_name }}
+          DB_OWNER: ${{ inputs.db_owner }}
+        run: |
+          docker run --rm -v "$PWD:/liquibase/changelog" "$LIQUIBASE_IMAGE" \
+            --search-path=/liquibase/changelog \
+            update \
+            --changelog-file=infra/postgres/changelog.yaml \
+            --url="jdbc:postgresql://$DB_HOST:$DB_PORT/postgres" \
+            --username="$DB_ADMIN_USER" \
+            --password="$DB_ADMIN_PASSWORD" \
+            -Ddb_name="$DB_NAME" \
+            -Ddb_owner="$DB_OWNER" \
+            -Downer_password="$DB_OWNER_PASSWORD"

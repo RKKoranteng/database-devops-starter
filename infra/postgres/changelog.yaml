@@ -1,0 +1,20 @@
+# Bootstrap changelog: creates the owner role and the application database.
+# Run against the instance's maintenance database (postgres), not the app database.
+#
+# Parameters (pass with -D<name>=<value>; CLI values override the defaults below):
+#   db_owner        role that owns the database   (default: app_user)
+#   db_name         database to create            (default: app_db)
+#   owner_password  password for db_owner        (required, no default)
+databaseChangeLog:
+  - property:
+      name: db_owner
+      value: app_user
+  - property:
+      name: db_name
+      value: app_db
+  - include:
+      file: create_role.sql
+      relativeToChangelogFile: true
+  - include:
+      file: create_database.sql
+      relativeToChangelogFile: true
