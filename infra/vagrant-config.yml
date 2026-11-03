@@ -1,0 +1,12 @@
+vm:
+  box: bento/ubuntu-24.04                  # Vagrant box (base OS image) to build the VM from
+  hostname: postgres-dev                   # Machine name inside Ubuntu (shell prompt, `hostname` command)
+  name: postgres-dev                       # VM label in VirtualBox Manager; must be unique on your computer
+  memory: 2048                             # RAM for the VM, in MB
+  cpus: 2                                  # Number of virtual CPUs for the VM
+
+postgres:
+  database: devdb                          # Database created on first provision
+  user: kofi                               # Login role that owns the database
+  password: welcome1                       # Password for the user (local development only)
+  host_port: 5432                          # Port on your computer for connecting; auto-changes if already in use

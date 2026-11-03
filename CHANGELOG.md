@@ -10,6 +10,8 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 ## [2026.10.31]
 
 ### Added
+- add infrastructure directory
+- add readme (intitial repo doc)
 - changelog to document notable changes to the repository
 - MIT license
 - add .gitignore
@@ -23,4 +25,6 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - views
 
 ### Changes
+- update directory tree in readme
+- move schema directories as subdir inside the schema dir
 - ignore gh-scripts
