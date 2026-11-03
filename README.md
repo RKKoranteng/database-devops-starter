@@ -25,9 +25,12 @@ The [Bootstrap database](.github/workflows/bootstrap-database.yml) workflow uses
 | Trigger | What it does |
 |---|---|
 | Pull request touching `infra/postgres/` | Runs the changelog twice against a throwaway Postgres 16 container and checks that the role owns the database |
-| Manual run (Actions → Bootstrap database → Run workflow) | Runs the changelog against the instance for the chosen GitHub environment |
+| Manual run with target `ephemeral` (default) | Same as a pull request, using the database and owner names you enter. No secrets needed |
+| Manual run with target `instance` | Runs the changelog against the instance for the chosen GitHub environment |
 
-### Setup for manual runs
+Manual runs start from Actions → Bootstrap database → Run workflow.
+
+### Setup for `instance` runs
 
 Create a GitHub environment (e.g. `dev`) under Settings → Environments and add these secrets:
 
@@ -39,6 +42,19 @@ Create a GitHub environment (e.g. `dev`) under Settings → Environments and add
 | `DB_ADMIN_PASSWORD` | Password for `DB_ADMIN_USER` |
 | `DB_OWNER_PASSWORD` | Password given to the new owner role |
 
+Add them as **environment secrets**, not environment variables; the workflow reads `secrets.*`.
+
+Or, with the [GitHub CLI](https://cli.github.com/) installed (`winget install GitHub.cli`, then `gh auth login`):
+
+```bash
+gh secret set DB_HOST --env dev
+gh secret set DB_ADMIN_USER --env dev
+gh secret set DB_ADMIN_PASSWORD --env dev
+gh secret set DB_OWNER_PASSWORD --env dev
+```
+
+Each command prompts for the value, so it doesn't end up in your shell history.
+
 The database name and owner role are workflow inputs and default to `app_db` and `app_user`.
 
 ### Notes
@@ -47,3 +63,12 @@ The database name and owner role are workflow inputs and default to `app_db` and
 - Liquibase creates its `DATABASECHANGELOG` tracking tables in the `postgres` database.
 - Changing `DB_OWNER_PASSWORD` after the first run changes the role changeset's checksum. Rotate the password with `ALTER ROLE` outside this workflow.
 - The changesets have no rollback, so the pipeline never drops a database.
+
+### Troubleshooting
+
+| Symptom | Cause and fix |
+|---|---|
+| `Secret DB_HOST is not set in environment 'dev'` | The secrets are missing, saved as variables, or saved under a different environment name. Add them as environment secrets to the environment you select |
+| `Connect timed out` | GitHub-hosted runners can't reach the instance (local machine, VM or private network, or a firewall blocking port 5432). Use target `ephemeral` to test the changelog, or point `DB_HOST` at an instance reachable from the internet |
+| A fix to the workflow has no effect | **Re-run jobs** reuses the workflow file from the original run. Push the fix and start a new run from Run workflow |
+| Log shows `jdbc:***ql://***` | GitHub masks secret values wherever they appear. If a secret is `postgres`, it is also masked inside `postgresql`. This is harmless |
