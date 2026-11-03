@@ -1,0 +1,29 @@
+# Schema changelog: applies every change under schema/ to the application database.
+#
+# Folders are applied in dependency order. Within a folder, files run in alphabetical order,
+# so prefix new files with the next number (e.g. 003_payments.sql).
+databaseChangeLog:
+  - includeAll:
+      path: sequences/
+      relativeToChangelogFile: true
+      errorIfMissingOrEmpty: false
+  - includeAll:
+      path: tables/
+      relativeToChangelogFile: true
+      errorIfMissingOrEmpty: false
+  - includeAll:
+      path: indexes/
+      relativeToChangelogFile: true
+      errorIfMissingOrEmpty: false
+  - includeAll:
+      path: views/
+      relativeToChangelogFile: true
+      errorIfMissingOrEmpty: false
+  - includeAll:
+      path: procedures/
+      relativeToChangelogFile: true
+      errorIfMissingOrEmpty: false
+  - includeAll:
+      path: triggers/
+      relativeToChangelogFile: true
+      errorIfMissingOrEmpty: false

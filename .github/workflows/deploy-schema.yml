@@ -1,0 +1,141 @@
+# Applies the schema changelog (schema/changelog.yaml) to the application database with Liquibase.
+#
+# pull_request:                         applies the changelog to a throwaway Postgres, rolls it back, applies it again, then runs a smoke test.
+# workflow_dispatch, target=ephemeral:  same as pull_request.
+# workflow_dispatch, target=instance:   applies the changelog to a real instance, using the chosen GitHub environment's secrets.
+#                                       Run the Bootstrap database workflow first so the database and owner role exist.
+#
+# Environment secrets required for target=instance:
+#   DB_HOST, DB_PORT, DB_OWNER_PASSWORD
+name: Deploy schema
+
+on:
+  pull_request:
+    paths:
+      - "schema/**"
+      - ".github/workflows/deploy-schema.yml"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "ephemeral = throwaway Postgres container, instance = real instance from the environment's secrets"
+        type: choice
+        options:
+          - ephemeral
+          - instance
+        default: ephemeral
+      environment:
+        description: "GitHub environment holding the target instance's secrets (target=instance only)"
+        required: true
+        default: dev
+      db_name:
+        description: "Database to apply the schema to (target=instance only)"
+        required: true
+        default: app_db
+      db_owner:
+        description: "Role Liquibase connects as (target=instance only)"
+        required: true
+        default: app_user
+
+env:
+  LIQUIBASE_IMAGE: liquibase/liquibase:4.29
+
+jobs:
+  validate:
+    if: github.event_name == 'pull_request' || inputs.target == 'ephemeral'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: app_db
+          POSTGRES_USER: app_user
+          POSTGRES_PASSWORD: ci_only_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update, roll back, update
+        run: |
+          docker run --rm --network host -v "$PWD:/liquibase/changelog" "$LIQUIBASE_IMAGE" \
+            --search-path=/liquibase/changelog \
+            update-testing-rollback \
+            --changelog-file=schema/changelog.yaml \
+            --url=jdbc:postgresql://localhost:5432/app_db \
+            --username=app_user \
+            --password=ci_only_password
+
+      - name: Smoke test
+        env:
+          PGHOST: localhost
+          PGDATABASE: app_db
+          PGUSER: app_user
+          PGPASSWORD: ci_only_password
+        run: |
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+          INSERT INTO customers (email, full_name) VALUES ('ada@example.com', 'Ada Lovelace')
+          RETURNING customer_id AS cid \gset
+
+          CALL place_order(:cid, 42.50);
+          UPDATE orders SET status = 'paid' WHERE customer_id = :cid;
+
+          DO $$
+          BEGIN
+              IF (SELECT order_count FROM customer_order_summary WHERE email = 'ada@example.com') <> 1 THEN
+                  RAISE EXCEPTION 'customer_order_summary did not count the order';
+              END IF;
+              IF NOT EXISTS (SELECT 1 FROM orders WHERE status = 'paid' AND updated_at > created_at) THEN
+                  RAISE EXCEPTION 'trg_orders_updated_at did not set updated_at';
+              END IF;
+          END $$;
+
+          SELECT * FROM customer_order_summary;
+          SQL
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch' && inputs.target == 'instance'
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets are set
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+        run: |
+          missing=0
+          for name in DB_HOST DB_OWNER_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::Secret $name is not set in environment '${{ inputs.environment }}'"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Liquibase status and update
+        env:
+          DB_HOST: ${{ secrets.DB_HOST }}
+          DB_PORT: ${{ secrets.DB_PORT || '5432' }}
+          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+          DB_NAME: ${{ inputs.db_name }}
+          DB_OWNER: ${{ inputs.db_owner }}
+        run: |
+          liquibase() {
+            docker run --rm -v "$PWD:/liquibase/changelog" "$LIQUIBASE_IMAGE" \
+              --search-path=/liquibase/changelog \
+              "$@" \
+              --changelog-file=schema/changelog.yaml \
+              --url="jdbc:postgresql://$DB_HOST:$DB_PORT/$DB_NAME" \
+              --username="$DB_OWNER" \
+              --password="$DB_OWNER_PASSWORD"
+          }
+          echo "::group::Pending changesets"
+          liquibase status --verbose
+          echo "::endgroup::"
+          liquibase update
