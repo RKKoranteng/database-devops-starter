@@ -1,29 +1,43 @@
-# Schema changelog: applies every change under schema/ to the application database.
+# Schema changelog: applies the listed files to the application database, top to bottom.
 #
-# Folders are applied in dependency order. Within a folder, files run in alphabetical order,
-# so prefix new files with the next number (e.g. 003_payments.sql).
+# Only files listed here run. To add a change, create the file and add an include below it,
+# keeping dependency order (sequences, tables, indexes, views, procedures, triggers).
+# Liquibase records every applied changeset in DATABASECHANGELOG and skips it on later runs,
+# so already-applied files stay in this list.
 databaseChangeLog:
-  - includeAll:
-      path: sequences/
+  # tables
+  - include:
+      file: tables/customers.sql
       relativeToChangelogFile: true
-      errorIfMissingOrEmpty: false
-  - includeAll:
-      path: tables/
+  - include:
+      file: tables/orders.sql
       relativeToChangelogFile: true
-      errorIfMissingOrEmpty: false
-  - includeAll:
-      path: indexes/
+
+  # indexes
+  - include:
+      file: indexes/idx_orders_customer_id.sql
       relativeToChangelogFile: true
-      errorIfMissingOrEmpty: false
-  - includeAll:
-      path: views/
+  - include:
+      file: indexes/idx_orders_status_created_at.sql
       relativeToChangelogFile: true
-      errorIfMissingOrEmpty: false
-  - includeAll:
-      path: procedures/
+
+  # views
+  - include:
+      file: views/customer_order_summary.sql
       relativeToChangelogFile: true
-      errorIfMissingOrEmpty: false
-  - includeAll:
-      path: triggers/
+
+  # procedures
+  - include:
+      file: procedures/place_order.sql
       relativeToChangelogFile: true
-      errorIfMissingOrEmpty: false
+
+  # triggers
+  - include:
+      file: triggers/set_updated_at.sql
+      relativeToChangelogFile: true
+  - include:
+      file: triggers/trg_customers_updated_at.sql
+      relativeToChangelogFile: true
+  - include:
+      file: triggers/trg_orders_updated_at.sql
+      relativeToChangelogFile: true

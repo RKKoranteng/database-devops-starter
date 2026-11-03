@@ -12,7 +12,7 @@ database-devops-starter/
 │   └── postgres/     # Liquibase changelog that creates the owner role and database
 ├── pipelines/        # Pipelines for validating, deploying and rolling back changes
 ├── schema/           # Schema definitions (tables, indexes, triggers, etc)
-│   ├── changelog.yaml    # Liquibase master changelog that applies the folders below in order
+│   ├── changelog.yaml    # Liquibase master changelog listing which files run, in order
 │   ├── sequences/
 │   ├── tables/
 │   ├── indexes/
@@ -27,7 +27,7 @@ database-devops-starter/
 
 ## Deploying schema changes
 
-The [Deploy schema](.github/workflows/deploy-schema.yml) workflow uses Liquibase to apply [schema/changelog.yaml](schema/changelog.yaml) to the application database. The changelog picks up every `.sql` file under `schema/`, folder by folder in dependency order: sequences, tables, indexes, views, procedures, then triggers.
+The [Deploy schema](.github/workflows/deploy-schema.yml) workflow uses Liquibase to apply [schema/changelog.yaml](schema/changelog.yaml) to the application database. Only the files listed in the changelog run, top to bottom, so other SQL files in `schema/` are ignored. Liquibase records each applied changeset in its `DATABASECHANGELOG` table and skips it on later runs, so each deploy only applies new changes.
 
 | Trigger | What it does |
 |---|---|
@@ -47,17 +47,30 @@ The repo ships with a small customers and orders schema to show each object type
 | `indexes/` | `idx_orders_customer_id`, `idx_orders_status_created_at` |
 | `views/` | `customer_order_summary` |
 | `procedures/` | `place_order(customer_id, total_amount)` |
-| `triggers/` | `set_updated_at()` function, with triggers on `customers` and `orders` |
+| `triggers/` | `set_updated_at()` trigger function, `trg_customers_updated_at`, `trg_orders_updated_at` |
 
 Replace them with your own objects once the pipeline works for you.
 
 ### Adding a change
 
-1. Add a file to the right folder, prefixed with the next number so it sorts after existing files, e.g. `schema/tables/003_payments.sql`.
-2. Write it as [Liquibase formatted SQL](https://docs.liquibase.com/concepts/changelogs/sql-format.html), starting with `--liquibase formatted sql`. Give every changeset a unique `author:id` and a `--rollback`.
-3. For views, procedures and functions, use `CREATE OR REPLACE` with `runOnChange:true`, then edit the file in place for later changes.
-4. Add `splitStatements:false` to any changeset with a plpgsql body, so Liquibase doesn't split it at the semicolons.
-5. Never edit a changeset that has already run unless it is `runOnChange`. Add a new changeset instead, or Liquibase fails with a checksum error.
+1. Name the file after the object it creates, one object per file, e.g. `schema/tables/payments.sql` or `schema/indexes/idx_payments_order_id.sql`. Later changes to that object (e.g. an `ALTER TABLE`) go in the same file as a new changeset below the existing ones. If such a change depends on an object listed later in the changelog, put it in a new file listed after that object instead, because a file's changesets run at that file's position in the changelog. Never rename or move a file after it has been applied: Liquibase identifies changesets partly by file path and would try to run them again.
+2. Add an `include` for it to [schema/changelog.yaml](schema/changelog.yaml), after anything it depends on. A file that isn't listed never runs.
+3. Write it as [Liquibase formatted SQL](https://docs.liquibase.com/concepts/changelogs/sql-format.html), starting with `--liquibase formatted sql`. Give every changeset a unique `author:id` and a `--rollback`.
+4. Tables and indexes: never edit or drop and recreate them. Change them with a new changeset (`ALTER TABLE`, `CREATE INDEX`), so data is kept.
+5. Views, procedures, functions and triggers: use `CREATE OR REPLACE` with `runOnChange:true`, then edit the file in place for later changes (`CREATE OR REPLACE TRIGGER` needs Postgres 14+). Add a `DROP ... IF EXISTS` before the `CREATE` in the same changeset only when `OR REPLACE` can't do the change: when you remove, rename or reorder a view's columns, or change a procedure's or function's parameters, which would otherwise create a second version alongside the old one.
+6. Add `splitStatements:false` to any changeset with a plpgsql body, so Liquibase doesn't split it at the semicolons.
+7. Never edit a changeset that has already run unless it is `runOnChange`. Add a new changeset instead, or Liquibase fails with a checksum error.
+
+### Objects that already exist
+
+Liquibase only knows about changes it applied itself. If an object was created some other way (by hand, or before you adopted Liquibase), its `CREATE` will fail. Either run `liquibase changelog-sync` once against that database to mark the changelog as already applied, or guard the changeset with a precondition:
+
+```sql
+--changeset you:create-table-legacy
+--preconditions onFail:MARK_RAN
+--precondition-sql-check expectedResult:0 SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = 'legacy'
+CREATE TABLE legacy (...);
+```
 
 ## Bootstrapping a database
 

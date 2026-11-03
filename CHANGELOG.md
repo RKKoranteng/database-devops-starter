@@ -14,13 +14,13 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - manual trigger with a `target` choice : `ephemeral` (throwaway postgres container) or `instance` (real instance from environment secrets)
 - readme section on bootstrapping a database and the secrets it needs
 - readme troubleshooting table for missing secrets, connection timeouts, re-runs and masked log output
-- liquibase schema changelog (`schema/changelog.yaml`) that applies each schema folder in dependency order
+- liquibase schema changelog (`schema/changelog.yaml`) that applies only the files it lists, in dependency order. one object per schema file, named after the object
 - sample schema objects, each with a rollback : 
     - tables : customers, orders
-    - indexes : orders by customer, orders by status and created date
+    - indexes : idx_orders_customer_id, idx_orders_status_created_at
     - views : customer_order_summary
     - procedures : place_order
-    - triggers : set_updated_at on customers and orders
+    - triggers : set_updated_at function, trg_customers_updated_at, trg_orders_updated_at (`CREATE OR REPLACE TRIGGER`, rerun on change, postgres 14+)
 - `Deploy schema` github actions workflow : 
     - on pull requests, applies the changelog to a throwaway postgres container, rolls it back, applies it again and runs a smoke test
     - manual trigger with a `target` choice : `ephemeral` or `instance`
