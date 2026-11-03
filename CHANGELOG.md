@@ -7,6 +7,13 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 
 ## [Unreleased]
 
+### Added
+- liquibase changelog (`infra/postgres/`) to create the owner role and application database, safe to rerun
+- `Bootstrap database` github actions workflow : 
+    - validates the changelog on pull requests against a throwaway postgres container
+    - runs the changelog against a target instance on manual trigger
+- readme section on bootstrapping a database and the secrets it needs
+
 ## [2026.10.31]
 
 ### Added
