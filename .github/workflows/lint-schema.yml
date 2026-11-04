@@ -1,0 +1,55 @@
+# Lints schema changes for risky migration patterns and policy violations.
+#
+# pull_request:       lints the .sql files the PR adds or changes under schema/.
+# workflow_dispatch:  lints every .sql file under schema/.
+#
+# Fails on policy violations (e.g. a changeset without a rollback).
+# Risky patterns don't fail the run; they set the job's risk-level output to high
+# so later jobs can require DBA review.
+name: Lint schema
+
+on:
+  pull_request:
+    paths:
+      - "schema/**"
+      - "pipelines/lint/**"
+      - ".squawk.toml"
+      - ".github/workflows/lint-schema.yml"
+  workflow_dispatch:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    outputs:
+      risk-level: ${{ steps.lint.outputs.risk-level }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Squawk
+        run: npm install --global squawk-cli@1
+
+      - name: Test lint rules against samples
+        run: bash pipelines/lint/test-lint.sh
+
+      - name: Find SQL files to lint
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- 'schema/*.sql' > files.txt
+          else
+            git ls-files -- 'schema/*.sql' > files.txt
+          fi
+          echo "Files to lint:"
+          cat files.txt
+
+      - name: Lint
+        id: lint
+        run: |
+          mapfile -t files < files.txt
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No SQL files changed"
+            echo "risk-level=low" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          bash pipelines/lint/lint-schema.sh "${files[@]}"

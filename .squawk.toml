@@ -1,0 +1,8 @@
+# Squawk configuration, used by pipelines/lint/lint-schema.sh.
+# Rule list: https://squawkhq.com/docs/rules
+# A rule listed here is skipped for every file.
+excluded_rules = [
+    # Asks for IF NOT EXISTS / IF EXISTS. This repo relies on Liquibase tracking instead,
+    # so a deploy fails loudly when a database has drifted from source control.
+    "prefer-robust-stmts",
+]

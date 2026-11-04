@@ -11,6 +11,7 @@ database-devops-starter/
 ├── infra/            # Infrastructure specific code
 │   └── postgres/     # Liquibase changelog that creates the owner role and database
 ├── pipelines/        # Pipelines for validating, deploying and rolling back changes
+│   └── lint/         # Schema lint script, its tests and sample changesets
 ├── schema/           # Schema definitions (tables, indexes, triggers, etc)
 │   ├── changelog.yaml    # Liquibase master changelog listing which files run, in order
 │   ├── sequences/
@@ -20,6 +21,7 @@ database-devops-starter/
 │   ├── procedures/
 │   └── triggers/
 ├── .gitignore        # Files and folders Git should ignore
+├── .squawk.toml      # Squawk lint rule configuration
 ├── CHANGELOG.md      # Release history and notes
 ├── LICENSE           # MIT License
 └── README.md         # Project overview (this file)
@@ -56,7 +58,7 @@ Replace them with your own objects once the pipeline works for you.
 1. Name the file after the object it creates, one object per file, e.g. `schema/tables/payments.sql` or `schema/indexes/idx_payments_order_id.sql`. Later changes to that object (e.g. an `ALTER TABLE`) go in the same file as a new changeset below the existing ones. If such a change depends on an object listed later in the changelog, put it in a new file listed after that object instead, because a file's changesets run at that file's position in the changelog. Never rename or move a file after it has been applied: Liquibase identifies changesets partly by file path and would try to run them again.
 2. Add an `include` for it to [schema/changelog.yaml](schema/changelog.yaml), after anything it depends on. A file that isn't listed never runs.
 3. Write it as [Liquibase formatted SQL](https://docs.liquibase.com/concepts/changelogs/sql-format.html), starting with `--liquibase formatted sql`. Give every changeset a unique `author:id` and a `--rollback`.
-4. Tables and indexes: never edit or drop and recreate them. Change them with a new changeset (`ALTER TABLE`, `CREATE INDEX`), so data is kept.
+4. Tables and indexes: never edit or drop and recreate them. Change them with a new changeset (`ALTER TABLE`, `CREATE INDEX`), so data is kept. Create and drop indexes `CONCURRENTLY`, with `runInTransaction:false` on the changeset, so they don't block writes.
 5. Views, procedures, functions and triggers: use `CREATE OR REPLACE` with `runOnChange:true`, then edit the file in place for later changes (`CREATE OR REPLACE TRIGGER` needs Postgres 14+). Add a `DROP ... IF EXISTS` before the `CREATE` in the same changeset only when `OR REPLACE` can't do the change: when you remove, rename or reorder a view's columns, or change a procedure's or function's parameters, which would otherwise create a second version alongside the old one.
 6. Add `splitStatements:false` to any changeset with a plpgsql body, so Liquibase doesn't split it at the semicolons.
 7. Never edit a changeset that has already run unless it is `runOnChange`. Add a new changeset instead, or Liquibase fails with a checksum error.
@@ -71,6 +73,34 @@ Liquibase only knows about changes it applied itself. If an object was created s
 --precondition-sql-check expectedResult:0 SELECT count(*) FROM pg_tables WHERE schemaname = 'public' AND tablename = 'legacy'
 CREATE TABLE legacy (...);
 ```
+
+## Linting schema changes
+
+The [Lint schema](.github/workflows/lint-schema.yml) workflow checks the `.sql` files a pull request adds or changes under `schema/`. A manual run checks every file. It runs two layers of checks:
+
+- **Policy checks** ([pipelines/lint/lint-schema.sh](pipelines/lint/lint-schema.sh)) fail the PR:
+  - a changeset without a `--rollback` (use `--rollback empty` when a change can't be undone)
+  - `CREATE`/`DROP INDEX CONCURRENTLY` in a changeset without `runInTransaction:false`
+- **Risk checks** set the job's `risk-level` output to `high` but don't fail the PR:
+  - every [Squawk](https://squawkhq.com/docs/rules) rule, which covers table-locking `ALTER`s, index builds that block writes, dropped columns or tables, column type changes, new `NOT NULL` columns and more
+  - a foreign key column with no index that starts with that column
+
+With no findings, `risk-level` is `low`. Later jobs can read it as `needs.lint.outputs.risk-level`, for example to require DBA review only for high-risk changes. The run summary shows the risk level and the number of policy violations.
+
+### Running it locally
+
+```bash
+npm install --global squawk-cli@1
+bash pipelines/lint/lint-schema.sh schema/tables/orders.sql
+```
+
+Without Squawk installed, `SKIP_SQUAWK=1 bash pipelines/lint/lint-schema.sh <files>` runs only the policy and foreign key checks.
+
+### Adding or disabling rules
+
+- **Turn off a Squawk rule:** add its name to `excluded_rules` in [.squawk.toml](.squawk.toml), with a comment saying why. `prefer-robust-stmts` is already off, because this repo deliberately avoids `IF NOT EXISTS` (see [Objects that already exist](#objects-that-already-exist)).
+- **Add or change a policy or foreign key check:** [pipelines/lint/changesets.awk](pipelines/lint/changesets.awk) finds changesets, rollbacks and foreign keys in each file, and [lint-schema.sh](pipelines/lint/lint-schema.sh) decides what each finding means.
+- **Test your change:** the samples in [pipelines/lint/samples/](pipelines/lint/samples/) must keep their expected result: `safe.sql` low, `risky.sql` high, `policy_violation.sql` fails. Run `bash pipelines/lint/test-lint.sh`, which the workflow also runs on every lint. Add a sample when you add a rule.
 
 ## Bootstrapping a database
 

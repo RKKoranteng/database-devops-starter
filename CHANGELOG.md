@@ -17,7 +17,7 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 - liquibase schema changelog (`schema/changelog.yaml`) that applies only the files it lists, in dependency order. one object per schema file, named after the object
 - sample schema objects, each with a rollback : 
     - tables : customers, orders
-    - indexes : idx_orders_customer_id, idx_orders_status_created_at
+    - indexes : idx_orders_customer_id, idx_orders_status_created_at (built `CONCURRENTLY` so they don't block writes)
     - views : customer_order_summary
     - procedures : place_order
     - triggers : set_updated_at function, trg_customers_updated_at, trg_orders_updated_at (`CREATE OR REPLACE TRIGGER`, rerun on change, postgres 14+)
@@ -25,6 +25,13 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - on pull requests, applies the changelog to a throwaway postgres container, rolls it back, applies it again and runs a smoke test
     - manual trigger with a `target` choice : `ephemeral` or `instance`
 - readme section on deploying schema changes and adding new ones
+- `Lint schema` github actions workflow for changed schema files : 
+    - policy checks that fail the PR : changeset without a rollback, `CONCURRENTLY` without `runInTransaction:false`
+    - risk checks that set `risk-level` to high : squawk rules (table-locking alters, blocking index builds, dropped columns or tables, ...) and foreign keys without an index
+    - `risk-level` (low or high) job output for later jobs
+- lint script, self-test and sample safe, risky and policy-violating changesets (`pipelines/lint/`)
+- squawk rule configuration (`.squawk.toml`)
+- readme section on linting, and on adding or disabling rules
 
 ## [2026.10.31]
 
