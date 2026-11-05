@@ -1,15 +1,16 @@
-# Applies the schema changelog (schema/changelog.yaml) to the application database with Liquibase.
-# Every run starts with the Lint schema workflow; nothing is applied unless lint passes.
+# Lints, tests and deploys the schema changelog (schema/changelog.yaml) with Liquibase:
 #
-# pull_request:                         lint, then on a throwaway Postgres: update, rollback, update again,
-#                                       then the test cases in schema/tests.
-# workflow_dispatch, target=ephemeral:  same as pull_request.
-# workflow_dispatch, target=instance:   lint, then show pending changesets and update a real instance,
-#                                       using the chosen GitHub environment's secrets.
-#                                       Run the Bootstrap database workflow first so the database and owner role exist.
+#   Lint ─► Test in ephemeral environment ─► Deploy to dev ─► Deploy to qa ─► Deploy to prod
+#           (update, test rollback,           + unit tests     + unit tests
+#            re-apply, unit tests)
 #
-# Environment secrets required for target=instance:
-#   DB_HOST, DB_PORT, DB_OWNER_PASSWORD
+# pull_request:       Lint and Test in ephemeral environment only. Nothing is deployed from a PR.
+# push to main:       the whole pipeline, once the PR is merged.
+# workflow_dispatch:  the whole pipeline when run on main; Lint and Test only on any other branch.
+#
+# Each stage waits for the one before it and is skipped if it fails. Deploys use the dev, qa and prod
+# GitHub environments; see deploy-environment.yml for the secrets each one needs. Add required
+# reviewers to the prod environment so production waits for an approval.
 name: Deploy schema
 
 on:
@@ -19,28 +20,23 @@ on:
       - "pipelines/bin/**"
       - "pipelines/test/**"
       - ".github/workflows/deploy-schema.yml"
+      - ".github/workflows/deploy-environment.yml"
+      - ".github/workflows/lint-schema.yml"
+  push:
+    branches: [main]
+    paths:
+      - "schema/**"
+      - "pipelines/bin/**"
+      - "pipelines/test/**"
+      - ".github/workflows/deploy-schema.yml"
+      - ".github/workflows/deploy-environment.yml"
       - ".github/workflows/lint-schema.yml"
   workflow_dispatch:
-    inputs:
-      target:
-        description: "ephemeral = throwaway Postgres container, instance = real instance from the environment's secrets"
-        type: choice
-        options:
-          - ephemeral
-          - instance
-        default: ephemeral
-      environment:
-        description: "GitHub environment holding the target instance's secrets (target=instance only)"
-        required: true
-        default: dev
-      db_name:
-        description: "Database to apply the schema to (target=instance only)"
-        required: true
-        default: app_db
-      db_owner:
-        description: "Role Liquibase connects as (target=instance only)"
-        required: true
-        default: app_user
+
+# One run at a time per branch, so two deploys never overlap. A queued run waits rather than cancelling.
+concurrency:
+  group: deploy-schema-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   LIQUIBASE_IMAGE: liquibase/liquibase:4.29
@@ -50,10 +46,9 @@ jobs:
     name: Lint
     uses: ./.github/workflows/lint-schema.yml
 
-  validate:
-    name: Test on throwaway Postgres
+  test:
+    name: Test in ephemeral environment
     needs: lint
-    if: github.event_name == 'pull_request' || inputs.target == 'ephemeral'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -83,13 +78,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Liquibase
+      - name: "1. Initialize ephemeral test environment"
+        id: init
+        run: |
+          pg_isready
+          psql -tAc "SELECT version()"
+          echo "Throwaway Postgres is ready. It is deleted when this job ends."
+
+      - name: "2. Set up Liquibase"
+        id: setup
         run: |
           chmod +x pipelines/bin/liquibase
           echo "$GITHUB_WORKSPACE/pipelines/bin" >> "$GITHUB_PATH"
           docker pull --quiet "$LIQUIBASE_IMAGE"
 
-      - name: "1. Update: apply every changeset"
+      - name: "3. Update change"
         id: update
         run: |
           liquibase update
@@ -97,7 +100,7 @@ jobs:
           echo "applied=$applied" >> "$GITHUB_OUTPUT"
           echo "Applied $applied changesets"
 
-      - name: "2. Rollback: undo every changeset"
+      - name: "4. Test rollback"
         id: rollback
         run: |
           liquibase rollback-count --count=${{ steps.update.outputs.applied }}
@@ -119,7 +122,7 @@ jobs:
           fi
           echo "Rolled back ${{ steps.update.outputs.applied }} changesets; the schema is empty again"
 
-      - name: "3. Update again: re-apply after rollback"
+      - name: "5. Re-apply change"
         id: reapply
         run: |
           liquibase update
@@ -130,7 +133,7 @@ jobs:
           fi
           echo "Re-applied $applied changesets"
 
-      - name: "4. Tests: run every test case in schema/tests"
+      - name: "6. Unit tests (schema/tests)"
         id: tests
         run: bash pipelines/test/run-sql-tests.sh
 
@@ -138,47 +141,43 @@ jobs:
         if: always()
         run: |
           {
-            echo "### Test on throwaway Postgres"
+            echo "### Test in ephemeral environment"
             echo "| Step | Result |"
             echo "|---|---|"
             echo "| Lint | ${{ needs.lint.result }} (risk level: ${{ needs.lint.outputs.risk-level }}) |"
-            echo "| 1. Update: apply every changeset | ${{ steps.update.outcome || 'not run' }} |"
-            echo "| 2. Rollback: undo every changeset | ${{ steps.rollback.outcome || 'not run' }} |"
-            echo "| 3. Update again: re-apply after rollback | ${{ steps.reapply.outcome || 'not run' }} |"
-            echo "| 4. Tests: run every test case in schema/tests | ${{ steps.tests.outcome || 'not run' }} |"
+            echo "| 1. Initialize ephemeral test environment | ${{ steps.init.outcome || 'not run' }} |"
+            echo "| 2. Set up Liquibase | ${{ steps.setup.outcome || 'not run' }} |"
+            echo "| 3. Update change | ${{ steps.update.outcome || 'not run' }} |"
+            echo "| 4. Test rollback | ${{ steps.rollback.outcome || 'not run' }} |"
+            echo "| 5. Re-apply change | ${{ steps.reapply.outcome || 'not run' }} |"
+            echo "| 6. Unit tests (schema/tests) | ${{ steps.tests.outcome || 'not run' }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
-    name: Deploy to ${{ inputs.environment }}
-    needs: lint
-    if: github.event_name == 'workflow_dispatch' && inputs.target == 'instance'
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.environment }}
-    env:
-      # Read by pipelines/bin/liquibase
-      DB_HOST: ${{ secrets.DB_HOST }}
-      DB_PORT: ${{ secrets.DB_PORT || '5432' }}
-      DB_NAME: ${{ inputs.db_name }}
-      DB_USER: ${{ inputs.db_owner }}
-      DB_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
-    steps:
-      - uses: actions/checkout@v4
+  deploy-dev:
+    name: Deploy to dev
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: dev
+      run-tests: true
+    secrets: inherit
 
-      - name: Check secrets are set
-        run: |
-          missing=0
-          [ -n "$DB_HOST" ] || { echo "::error::Secret DB_HOST is not set in environment '${{ inputs.environment }}'"; missing=1; }
-          [ -n "$DB_PASSWORD" ] || { echo "::error::Secret DB_OWNER_PASSWORD is not set in environment '${{ inputs.environment }}'"; missing=1; }
-          exit $missing
+  deploy-qa:
+    name: Deploy to qa
+    needs: deploy-dev
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: qa
+      run-tests: true
+    secrets: inherit
 
-      - name: Set up Liquibase
-        run: |
-          chmod +x pipelines/bin/liquibase
-          echo "$GITHUB_WORKSPACE/pipelines/bin" >> "$GITHUB_PATH"
-          docker pull --quiet "$LIQUIBASE_IMAGE"
-
-      - name: "1. Show pending changesets"
-        run: liquibase status --verbose
-
-      - name: "2. Update: apply pending changesets"
-        run: liquibase update
+  deploy-prod:
+    name: Deploy to prod
+    needs: deploy-qa
+    uses: ./.github/workflows/deploy-environment.yml
+    with:
+      environment: prod
+      # The unit tests insert test data, so they don't run against production.
+      run-tests: false
+    secrets: inherit

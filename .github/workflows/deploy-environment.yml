@@ -1,0 +1,65 @@
+# Deploys the schema changelog to one environment, then optionally runs the unit tests in
+# schema/tests against it. Called by Deploy schema for dev, qa and prod.
+#
+# The GitHub environment must have:
+#   secrets:              DB_HOST, DB_OWNER_PASSWORD, and DB_PORT if not 5432
+#   variables (optional): DB_NAME (default app_db), DB_USER (default app_user)
+# Run the Bootstrap database workflow against each environment first, so the database and owner role exist.
+name: Deploy environment
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "GitHub environment to deploy to (dev, qa or prod)"
+        type: string
+        required: true
+      run-tests:
+        description: "Run the unit tests in schema/tests after deploying"
+        type: boolean
+        default: true
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    env:
+      LIQUIBASE_IMAGE: liquibase/liquibase:4.29
+      # Read by pipelines/bin/liquibase
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT || '5432' }}
+      DB_NAME: ${{ vars.DB_NAME || 'app_db' }}
+      DB_USER: ${{ vars.DB_USER || 'app_user' }}
+      DB_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+      # Read by psql
+      PGHOST: ${{ secrets.DB_HOST }}
+      PGPORT: ${{ secrets.DB_PORT || '5432' }}
+      PGDATABASE: ${{ vars.DB_NAME || 'app_db' }}
+      PGUSER: ${{ vars.DB_USER || 'app_user' }}
+      PGPASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets are set
+        run: |
+          missing=0
+          [ -n "$DB_HOST" ] || { echo "::error::Secret DB_HOST is not set in environment '${{ inputs.environment }}'"; missing=1; }
+          [ -n "$DB_PASSWORD" ] || { echo "::error::Secret DB_OWNER_PASSWORD is not set in environment '${{ inputs.environment }}'"; missing=1; }
+          exit $missing
+
+      - name: Set up Liquibase
+        run: |
+          chmod +x pipelines/bin/liquibase
+          echo "$GITHUB_WORKSPACE/pipelines/bin" >> "$GITHUB_PATH"
+          docker pull --quiet "$LIQUIBASE_IMAGE"
+
+      - name: "1. Show pending changes"
+        run: liquibase status --verbose
+
+      - name: "2. Update change"
+        run: liquibase update
+
+      - name: "3. Unit tests (schema/tests)"
+        if: inputs.run-tests
+        run: bash pipelines/test/run-sql-tests.sh

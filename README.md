@@ -35,41 +35,62 @@ database-devops-starter/
 
 The [Deploy schema](.github/workflows/deploy-schema.yml) workflow uses Liquibase to apply [schema/changelog.yaml](schema/changelog.yaml) to the application database. Only the files listed in the changelog run, top to bottom, so other SQL files in `schema/` are ignored. Liquibase records each applied changeset in its `DATABASECHANGELOG` table and skips it on later runs, so each deploy only applies new changes.
 
-Every run starts by calling the [Lint schema](#linting-schema-changes) workflow. The Liquibase jobs wait for it and are skipped if lint fails, so nothing is applied, even to a throwaway container, until the code passes the policy checks.
+Every change goes through the same pipeline. Each stage waits for the one before it and is skipped if it fails, so nothing reaches a real database until the change has passed lint and been tested on a throwaway one:
 
-| Trigger | What it does |
+```
+Lint ──► Test in ephemeral environment ──► Deploy to dev ──► Deploy to qa ──► Deploy to prod
+           1. Initialize ephemeral test       1. Show pending     1. Show pending     1. Show pending
+              environment                        changes             changes             changes
+           2. Set up Liquibase                2. Update change    2. Update change    2. Update change
+           3. Update change                   3. Unit tests       3. Unit tests
+           4. Test rollback                      (schema/tests)      (schema/tests)
+           5. Re-apply change
+           6. Unit tests (schema/tests)
+```
+
+| Trigger | What runs |
 |---|---|
-| Pull request touching `schema/` | Lints the changed files, then on a throwaway Postgres 16 container: applies the changelog, rolls every change back, applies it again, and runs the test cases in `schema/tests/` |
-| Manual run with target `ephemeral` (default) | Lints every schema file, then does the same as a pull request. No secrets needed |
-| Manual run with target `instance` | Lints every schema file, shows pending changes, then applies them to the instance for the chosen GitHub environment, connecting as the owner role |
+| Pull request touching `schema/` or the pipeline | Lint and Test in ephemeral environment. Nothing is deployed from a PR |
+| Merge (push) to `main` | The whole pipeline: lint, test, then dev → qa → prod |
+| Manual run (Actions → Deploy schema → Run workflow) | On `main`: the whole pipeline. On any other branch: lint and test only |
 
-`instance` runs need `DB_HOST` and `DB_OWNER_PASSWORD` (plus `DB_PORT` if not 5432) in the environment, and the database must already exist, so run [Bootstrap database](#bootstrapping-a-database) first.
+Production is not tested with `schema/tests`, because the tests insert data (it is rolled back, but production shouldn't see test writes at all). Only one Deploy schema run per branch happens at a time, so deploys never overlap.
 
-### What a run looks like
+### What each stage proves
 
-On a pull request or an `ephemeral` run, the run page shows two jobs, and each job's steps are numbered in the order they run:
-
-```
-Lint / Lint SQL files                   Test on throwaway Postgres
-  1. Self-test                    ──►     1. Update: apply every changeset
-  2. Find SQL files to lint               2. Rollback: undo every changeset
-  3. Lint: policy and risk checks         3. Update again: re-apply after rollback
-                                          4. Tests: run every test case in schema/tests
-```
-
-| Step | What it proves | Fails when |
+| Stage / step | What it proves | Fails when |
 |---|---|---|
 | Lint | Every changeset has a rollback and follows policy; risky patterns are flagged | A policy rule is broken |
-| 1. Update | Every changeset applies to an empty database | Any changeset errors |
-| 2. Rollback | Every `--rollback` runs, and together they undo everything | A rollback errors, or a table, view, index, sequence, procedure or function is left behind |
-| 3. Update again | The changelog can be re-applied cleanly after a rollback | A changeset errors, or the number applied differs from step 1 |
-| 4. Tests | Every object behaves as its test cases expect (see [Writing tests](#writing-tests)) | Any test file errors. The failing line is marked in the file, and the run summary lists every test |
+| 1. Initialize ephemeral test environment | A throwaway Postgres 16 is up. It's deleted when the job ends | Postgres doesn't start |
+| 3. Update change | Every changeset applies to an empty database | Any changeset errors |
+| 4. Test rollback | Every `--rollback` runs, and together they undo everything | A rollback errors, or a table, view, index, sequence, procedure or function is left behind |
+| 5. Re-apply change | The changelog can be re-applied cleanly after a rollback | A changeset errors, or the number applied differs from step 3 |
+| 6. Unit tests | Every object behaves as its test cases expect (see [Writing tests](#writing-tests)) | Any test file errors. The failing line is marked in the file, and the run summary lists every test |
+| Deploy to dev / qa / prod | Shows the changesets that are about to run, then applies only those | A secret is missing, the database can't be reached, or a changeset errors |
+| Unit tests on dev / qa | The deployed objects behave as expected in that environment. Each test file is rolled back | Any test file errors |
 
-The run summary has a table with each step's result and the lint risk level. A failing step skips the steps after it.
+The ephemeral job's run summary has a table with each step's result and the lint risk level.
 
-An `instance` run shows **Lint** then **Deploy to &lt;environment&gt;**, with the steps *1. Show pending changesets* and *2. Update: apply pending changesets*.
+The steps call [pipelines/bin/liquibase](pipelines/bin/liquibase), a small wrapper that runs Liquibase in Docker with the connection settings from the job, so each step reads as a plain command such as `liquibase update`. Deploys to dev, qa and prod all use the same steps, from [deploy-environment.yml](.github/workflows/deploy-environment.yml).
 
-The steps call [pipelines/bin/liquibase](pipelines/bin/liquibase), a small wrapper that runs Liquibase in Docker with the connection settings from the job, so each step reads as a plain command such as `liquibase update`.
+### Setting up dev, qa and prod
+
+Create three GitHub environments under Settings → Environments, named `dev`, `qa` and `prod`. For each one:
+
+1. Run [Bootstrap database](#bootstrapping-a-database) against it, so the database and owner role exist.
+2. Add these **environment secrets**:
+
+   | Secret | Purpose |
+   |---|---|
+   | `DB_HOST` | Hostname of that environment's Postgres instance |
+   | `DB_PORT` | Port (optional, defaults to `5432`) |
+   | `DB_OWNER_PASSWORD` | Password of the owner role Liquibase connects as |
+
+3. Optionally add **environment variables** `DB_NAME` and `DB_USER`, if they aren't `app_db` and `app_user`.
+
+For `prod`, also tick **Required reviewers** and add the people who approve production changes. The pipeline then pauses before Deploy to prod until one of them approves it in the run page. You can do the same for `qa`.
+
+Each instance must be reachable from GitHub's runners. For a database on a private network, use a self-hosted runner. Until an environment is set up, its deploy fails at *Check secrets are set*, and the stages after it are skipped.
 
 ### Sample objects
 
@@ -100,7 +121,7 @@ Replace them with your own objects once the pipeline works for you.
 
 Test cases live in [schema/tests/](schema/tests/), in the same folders as the objects they test, one file per object named `<object>_test.sql`. For example, `schema/procedures/place_order.sql` is tested by `schema/tests/procedures/place_order_test.sql`.
 
-Step 4 of the Deploy schema run executes every `.sql` file under `schema/tests/` with [pipelines/test/run-sql-tests.sh](pipelines/test/run-sql-tests.sh), after the schema has been applied, rolled back and applied again. There's nothing to register: a new file is picked up automatically. Test files aren't Liquibase changesets, so don't list them in `changelog.yaml`. They aren't linted either.
+Deploy schema runs every `.sql` file under `schema/tests/` with [pipelines/test/run-sql-tests.sh](pipelines/test/run-sql-tests.sh): on the ephemeral database after the schema has been applied, rolled back and applied again, and on dev and qa after each deploy. They never run against prod. There's nothing to register: a new file is picked up automatically. Test files aren't Liquibase changesets, so don't list them in `changelog.yaml`. They aren't linted either.
 
 How a test file works:
 
@@ -250,6 +271,6 @@ The database name and owner role are workflow inputs and default to `app_db` and
 | Symptom | Cause and fix |
 |---|---|
 | `Secret DB_HOST is not set in environment 'dev'` | The secrets are missing, saved as variables, or saved under a different environment name. Add them as environment secrets to the environment you select |
-| `Connect timed out` | GitHub-hosted runners can't reach the instance (local machine, VM or private network, or a firewall blocking port 5432). Use target `ephemeral` to test the changelog, or point `DB_HOST` at an instance reachable from the internet |
+| `Connect timed out` | GitHub-hosted runners can't reach the instance (local machine, VM or private network, or a firewall blocking port 5432). To test a changelog without a reachable database, use target `ephemeral` for Bootstrap database, or open a PR for Deploy schema. Otherwise point `DB_HOST` at an instance reachable from the internet, or use a self-hosted runner |
 | A fix to the workflow has no effect | **Re-run jobs** reuses the workflow file from the original run. Push the fix and start a new run from Run workflow |
 | Log shows `jdbc:***ql://***` | GitHub masks secret values wherever they appear. If a secret is `postgres`, it is also masked inside `postgresql`. This is harmless |

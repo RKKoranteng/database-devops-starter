@@ -22,11 +22,13 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - procedures : place_order
     - triggers : set_updated_at function, trg_customers_updated_at, trg_orders_updated_at (`CREATE OR REPLACE TRIGGER`, rerun on change, postgres 14+)
 - `Deploy schema` github actions workflow : 
-    - on pull requests, applies the changelog to a throwaway postgres container, rolls it back, applies it again and runs a smoke test
-    - manual trigger with a `target` choice : `ephemeral` or `instance`
-    - each stage is its own numbered step in the github ui (lint > 1. update > 2. rollback > 3. update again > 4. tests), with a results table in the run summary
-    - step 4 runs the test cases in `schema/tests/` instead of an inline smoke test
-    - rollback step fails if any changeset record, table, view, index, sequence, procedure or function is left behind
+    - pipeline : lint > test in ephemeral environment > deploy to dev (+ unit tests) > deploy to qa (+ unit tests) > deploy to prod
+    - test in ephemeral environment : initialize throwaway postgres, set up liquibase, update change, test rollback, re-apply change, unit tests (`schema/tests`), with a results table in the run summary
+    - test rollback fails if any changeset record, table, view, index, sequence, procedure or function is left behind
+    - pull requests run lint and the ephemeral test only. merges to main (and manual runs on main) run the whole pipeline
+    - dev, qa and prod use github environments, so prod can require an approval. unit tests never run against prod
+    - one run per branch at a time, so deploys never overlap
+    - `deploy-environment.yml` reusable workflow : the deploy steps shared by dev, qa and prod
     - `pipelines/bin/liquibase` wrapper so workflow steps read as plain liquibase commands
 - readme section on deploying schema changes and adding new ones
 - `schema/tests/` : sql test cases, one `<object>_test.sql` per object, in the same folders as the schema : 
