@@ -46,9 +46,9 @@ jobs:
       - name: "2. Find SQL files to lint"
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
-            git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- 'schema/*.sql' > files.txt
+            git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- 'schema/*.sql' ':(exclude)schema/tests/*' > files.txt
           else
-            git ls-files -- 'schema/*.sql' > files.txt
+            git ls-files -- 'schema/*.sql' ':(exclude)schema/tests/*' > files.txt
           fi
           echo "Files to lint:"
           cat files.txt

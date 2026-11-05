@@ -13,7 +13,8 @@ database-devops-starter/
 │   └── postgres/     # Liquibase changelog that creates the owner role and database
 ├── pipelines/        # Pipelines for validating, deploying and rolling back changes
 │   ├── bin/          # liquibase wrapper used by the workflow steps
-│   └── lint/         # Schema lint script, its tests and sample changesets
+│   ├── lint/         # Schema lint script, its tests and sample changesets
+│   └── test/         # Runner for the SQL test cases in schema/tests
 ├── schema/           # Schema definitions (tables, indexes, triggers, etc)
 │   ├── changelog.yaml    # Liquibase master changelog listing which files run, in order
 │   ├── sequences/
@@ -21,7 +22,8 @@ database-devops-starter/
 │   ├── indexes/
 │   ├── views/
 │   ├── procedures/
-│   └── triggers/
+│   ├── triggers/
+│   └── tests/        # Test cases, one *_test.sql per object, in the same folders as above
 ├── .gitignore        # Files and folders Git should ignore
 ├── .squawk.toml      # Squawk lint rule configuration
 ├── CHANGELOG.md      # Release history and notes
@@ -37,7 +39,7 @@ Every run starts by calling the [Lint schema](#linting-schema-changes) workflow.
 
 | Trigger | What it does |
 |---|---|
-| Pull request touching `schema/` | Lints the changed files, then on a throwaway Postgres 16 container: applies the changelog, rolls every change back, applies it again, and runs a smoke test against the sample objects |
+| Pull request touching `schema/` | Lints the changed files, then on a throwaway Postgres 16 container: applies the changelog, rolls every change back, applies it again, and runs the test cases in `schema/tests/` |
 | Manual run with target `ephemeral` (default) | Lints every schema file, then does the same as a pull request. No secrets needed |
 | Manual run with target `instance` | Lints every schema file, shows pending changes, then applies them to the instance for the chosen GitHub environment, connecting as the owner role |
 
@@ -52,7 +54,7 @@ Lint / Lint SQL files                   Test on throwaway Postgres
   1. Self-test                    ──►     1. Update: apply every changeset
   2. Find SQL files to lint               2. Rollback: undo every changeset
   3. Lint: policy and risk checks         3. Update again: re-apply after rollback
-                                          4. Smoke test: use the new schema
+                                          4. Tests: run every test case in schema/tests
 ```
 
 | Step | What it proves | Fails when |
@@ -61,7 +63,7 @@ Lint / Lint SQL files                   Test on throwaway Postgres
 | 1. Update | Every changeset applies to an empty database | Any changeset errors |
 | 2. Rollback | Every `--rollback` runs, and together they undo everything | A rollback errors, or a table, view, index, sequence, procedure or function is left behind |
 | 3. Update again | The changelog can be re-applied cleanly after a rollback | A changeset errors, or the number applied differs from step 1 |
-| 4. Smoke test | The sample objects work together: insert, procedure call, trigger, view | A query errors or a check fails |
+| 4. Tests | Every object behaves as its test cases expect (see [Writing tests](#writing-tests)) | Any test file errors. The failing line is marked in the file, and the run summary lists every test |
 
 The run summary has a table with each step's result and the lint risk level. A failing step skips the steps after it.
 
@@ -92,6 +94,46 @@ Replace them with your own objects once the pipeline works for you.
 5. Views, procedures, functions and triggers: use `CREATE OR REPLACE` with `runOnChange:true`, then edit the file in place for later changes (`CREATE OR REPLACE TRIGGER` needs Postgres 14+). Add a `DROP ... IF EXISTS` before the `CREATE` in the same changeset only when `OR REPLACE` can't do the change: when you remove, rename or reorder a view's columns, or change a procedure's or function's parameters, which would otherwise create a second version alongside the old one.
 6. Add `splitStatements:false` to any changeset with a plpgsql body, so Liquibase doesn't split it at the semicolons.
 7. Never edit a changeset that has already run unless it is `runOnChange`. Add a new changeset instead, or Liquibase fails with a checksum error.
+8. Add or update a test case for the object in `schema/tests/` (see [Writing tests](#writing-tests)).
+
+### Writing tests
+
+Test cases live in [schema/tests/](schema/tests/), in the same folders as the objects they test, one file per object named `<object>_test.sql`. For example, `schema/procedures/place_order.sql` is tested by `schema/tests/procedures/place_order_test.sql`.
+
+Step 4 of the Deploy schema run executes every `.sql` file under `schema/tests/` with [pipelines/test/run-sql-tests.sh](pipelines/test/run-sql-tests.sh), after the schema has been applied, rolled back and applied again. There's nothing to register: a new file is picked up automatically. Test files aren't Liquibase changesets, so don't list them in `changelog.yaml`. They aren't linted either.
+
+How a test file works:
+
+- **Plain SQL.** Each file runs in its own transaction, which is rolled back afterwards, so tests can't see each other's data and don't need to clean up.
+- **A test fails when any statement errors.** Use `RAISE EXCEPTION` in a `DO` block for a failed check.
+- **Make test data unique** (e.g. emails like `test.<object>@example.com`), so a test doesn't depend on other rows.
+- **Don't use `COMMIT` or `ROLLBACK`.** The runner handles the transaction.
+
+A check that something works:
+
+```sql
+CALL place_order(cid, 42.50);
+IF NOT EXISTS (SELECT 1 FROM orders WHERE customer_id = cid AND status = 'pending') THEN
+    RAISE EXCEPTION 'place_order did not create a pending order';
+END IF;
+```
+
+A check that something is rejected. Catch the expected error in an inner block; any other error, or no error, fails the test:
+
+```sql
+BEGIN
+    INSERT INTO orders (customer_id, status, total_amount) VALUES (cid, 'lost', 10);
+    RAISE EXCEPTION 'an invalid status was accepted';
+EXCEPTION WHEN check_violation THEN
+    NULL;  -- expected
+END;
+```
+
+Both snippets go inside a `DO $$ ... END $$;` block. See the [sample tests](schema/tests/) for complete files.
+
+`now()` stays the same for the whole transaction. To test something time-based, such as a trigger that sets `updated_at`, insert the row with an old timestamp first, then check that it changed (see [trg_orders_updated_at_test.sql](schema/tests/triggers/trg_orders_updated_at_test.sql)).
+
+To run the tests against your own database, set `PGHOST`, `PGDATABASE`, `PGUSER` and `PGPASSWORD`, then run `bash pipelines/test/run-sql-tests.sh` from the repo root. Each file's changes are rolled back, but use a disposable database anyway.
 
 ### Objects that already exist
 

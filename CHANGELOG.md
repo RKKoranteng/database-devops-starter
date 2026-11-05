@@ -24,10 +24,20 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 - `Deploy schema` github actions workflow : 
     - on pull requests, applies the changelog to a throwaway postgres container, rolls it back, applies it again and runs a smoke test
     - manual trigger with a `target` choice : `ephemeral` or `instance`
-    - each stage is its own numbered step in the github ui (lint > 1. update > 2. rollback > 3. update again > 4. smoke test), with a results table in the run summary
+    - each stage is its own numbered step in the github ui (lint > 1. update > 2. rollback > 3. update again > 4. tests), with a results table in the run summary
+    - step 4 runs the test cases in `schema/tests/` instead of an inline smoke test
     - rollback step fails if any changeset record, table, view, index, sequence, procedure or function is left behind
     - `pipelines/bin/liquibase` wrapper so workflow steps read as plain liquibase commands
 - readme section on deploying schema changes and adding new ones
+- `schema/tests/` : sql test cases, one `<object>_test.sql` per object, in the same folders as the schema : 
+    - tables : customers (unique email, default timestamps), orders (default status, status and amount checks, foreign key)
+    - indexes : idx_orders_customer_id, idx_orders_status_created_at (exist and are valid)
+    - views : customer_order_summary (customers with and without orders)
+    - procedures : place_order (creates a pending order, rejects a missing customer)
+    - triggers : trg_customers_updated_at, trg_orders_updated_at (set updated_at on update)
+- `pipelines/test/run-sql-tests.sh` : runs each test file in its own rolled-back transaction, marks the failing line in github and lists every test in the run summary
+- readme section on writing tests
+- schema lint skips `schema/tests/`
 - `Lint schema` github actions workflow for changed schema files : 
     - policy checks that fail the PR : changeset without a rollback, `CONCURRENTLY` without `runInTransaction:false`
     - risk checks that set `risk-level` to high, built into the lint script so they work without squawk : dropped tables or columns, column type changes, `SET NOT NULL`, constraints added without `NOT VALID`, unique or primary keys added without `USING INDEX`, `CREATE INDEX` without `CONCURRENTLY`, foreign keys without an index
