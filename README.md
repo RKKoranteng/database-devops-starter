@@ -12,6 +12,7 @@ database-devops-starter/
 ├── infra/            # Infrastructure specific code
 │   └── postgres/     # Liquibase changelog that creates the owner role and database
 ├── pipelines/        # Pipelines for validating, deploying and rolling back changes
+│   ├── bin/          # liquibase wrapper used by the workflow steps
 │   └── lint/         # Schema lint script, its tests and sample changesets
 ├── schema/           # Schema definitions (tables, indexes, triggers, etc)
 │   ├── changelog.yaml    # Liquibase master changelog listing which files run, in order
@@ -36,11 +37,37 @@ Every run starts by calling the [Lint schema](#linting-schema-changes) workflow.
 
 | Trigger | What it does |
 |---|---|
-| Pull request touching `schema/` | Lints the changed files, then applies the changelog to a throwaway Postgres 16 container, rolls every change back, applies it again, and runs a smoke test against the sample objects |
+| Pull request touching `schema/` | Lints the changed files, then on a throwaway Postgres 16 container: applies the changelog, rolls every change back, applies it again, and runs a smoke test against the sample objects |
 | Manual run with target `ephemeral` (default) | Lints every schema file, then does the same as a pull request. No secrets needed |
 | Manual run with target `instance` | Lints every schema file, shows pending changes, then applies them to the instance for the chosen GitHub environment, connecting as the owner role |
 
 `instance` runs need `DB_HOST` and `DB_OWNER_PASSWORD` (plus `DB_PORT` if not 5432) in the environment, and the database must already exist, so run [Bootstrap database](#bootstrapping-a-database) first.
+
+### What a run looks like
+
+On a pull request or an `ephemeral` run, the run page shows two jobs, and each job's steps are numbered in the order they run:
+
+```
+Lint / Lint SQL files                   Test on throwaway Postgres
+  1. Self-test                    ──►     1. Update: apply every changeset
+  2. Find SQL files to lint               2. Rollback: undo every changeset
+  3. Lint: policy and risk checks         3. Update again: re-apply after rollback
+                                          4. Smoke test: use the new schema
+```
+
+| Step | What it proves | Fails when |
+|---|---|---|
+| Lint | Every changeset has a rollback and follows policy; risky patterns are flagged | A policy rule is broken |
+| 1. Update | Every changeset applies to an empty database | Any changeset errors |
+| 2. Rollback | Every `--rollback` runs, and together they undo everything | A rollback errors, or a table, view, index, sequence, procedure or function is left behind |
+| 3. Update again | The changelog can be re-applied cleanly after a rollback | A changeset errors, or the number applied differs from step 1 |
+| 4. Smoke test | The sample objects work together: insert, procedure call, trigger, view | A query errors or a check fails |
+
+The run summary has a table with each step's result and the lint risk level. A failing step skips the steps after it.
+
+An `instance` run shows **Lint** then **Deploy to &lt;environment&gt;**, with the steps *1. Show pending changesets* and *2. Update: apply pending changesets*.
+
+The steps call [pipelines/bin/liquibase](pipelines/bin/liquibase), a small wrapper that runs Liquibase in Docker with the connection settings from the job, so each step reads as a plain command such as `liquibase update`.
 
 ### Sample objects
 

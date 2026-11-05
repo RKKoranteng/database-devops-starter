@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Runs Liquibase in Docker against the schema changelog, so workflow steps can read
+# `liquibase update`, `liquibase rollback-count --count=3`, and so on.
+# The workflows put this folder on PATH.
+#
+# Connection settings come from the environment:
+#   DB_HOST, DB_PORT (default 5432), DB_NAME, DB_USER, DB_PASSWORD
+# Optional: LIQUIBASE_IMAGE, CHANGELOG_FILE (default schema/changelog.yaml)
+set -euo pipefail
+
+exec docker run --rm --network host \
+  -v "${GITHUB_WORKSPACE:-$PWD}:/liquibase/changelog" \
+  "${LIQUIBASE_IMAGE:-liquibase/liquibase:4.29}" \
+  --search-path=/liquibase/changelog \
+  "$@" \
+  --changelog-file="${CHANGELOG_FILE:-schema/changelog.yaml}" \
+  --url="jdbc:postgresql://$DB_HOST:${DB_PORT:-5432}/$DB_NAME" \
+  --username="$DB_USER" \
+  --password="$DB_PASSWORD"

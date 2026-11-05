@@ -24,6 +24,9 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 - `Deploy schema` github actions workflow : 
     - on pull requests, applies the changelog to a throwaway postgres container, rolls it back, applies it again and runs a smoke test
     - manual trigger with a `target` choice : `ephemeral` or `instance`
+    - each stage is its own numbered step in the github ui (lint > 1. update > 2. rollback > 3. update again > 4. smoke test), with a results table in the run summary
+    - rollback step fails if any changeset record, table, view, index, sequence, procedure or function is left behind
+    - `pipelines/bin/liquibase` wrapper so workflow steps read as plain liquibase commands
 - readme section on deploying schema changes and adding new ones
 - `Lint schema` github actions workflow for changed schema files : 
     - policy checks that fail the PR : changeset without a rollback, `CONCURRENTLY` without `runInTransaction:false`

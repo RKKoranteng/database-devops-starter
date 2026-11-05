@@ -28,6 +28,7 @@ on:
 
 jobs:
   lint:
+    name: Lint SQL files
     runs-on: ubuntu-latest
     outputs:
       risk-level: ${{ steps.lint.outputs.risk-level }}
@@ -36,13 +37,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Squawk
+      - name: Set up Squawk
         run: npm install --global squawk-cli@1
 
-      - name: Test lint rules against samples
+      - name: "1. Self-test: lint rules catch the sample changesets"
         run: bash pipelines/lint/test-lint.sh
 
-      - name: Find SQL files to lint
+      - name: "2. Find SQL files to lint"
         run: |
           if [ "${{ github.event_name }}" = pull_request ]; then
             git diff --name-only --diff-filter=AM "origin/${{ github.base_ref }}...HEAD" -- 'schema/*.sql' > files.txt
@@ -52,7 +53,7 @@ jobs:
           echo "Files to lint:"
           cat files.txt
 
-      - name: Lint
+      - name: "3. Lint: policy and risk checks"
         id: lint
         run: |
           mapfile -t files < files.txt

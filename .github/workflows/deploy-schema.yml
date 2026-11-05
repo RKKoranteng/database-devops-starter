@@ -1,9 +1,10 @@
 # Applies the schema changelog (schema/changelog.yaml) to the application database with Liquibase.
 # Every run starts with the Lint schema workflow; nothing is applied unless lint passes.
 #
-# pull_request:                         applies the changelog to a throwaway Postgres, rolls it back, applies it again, then runs a smoke test.
+# pull_request:                         lint, then on a throwaway Postgres: update, rollback, update again, smoke test.
 # workflow_dispatch, target=ephemeral:  same as pull_request.
-# workflow_dispatch, target=instance:   applies the changelog to a real instance, using the chosen GitHub environment's secrets.
+# workflow_dispatch, target=instance:   lint, then show pending changesets and update a real instance,
+#                                       using the chosen GitHub environment's secrets.
 #                                       Run the Bootstrap database workflow first so the database and owner role exist.
 #
 # Environment secrets required for target=instance:
@@ -14,6 +15,7 @@ on:
   pull_request:
     paths:
       - "schema/**"
+      - "pipelines/bin/**"
       - ".github/workflows/deploy-schema.yml"
       - ".github/workflows/lint-schema.yml"
   workflow_dispatch:
@@ -43,9 +45,11 @@ env:
 
 jobs:
   lint:
+    name: Lint
     uses: ./.github/workflows/lint-schema.yml
 
   validate:
+    name: Test on throwaway Postgres
     needs: lint
     if: github.event_name == 'pull_request' || inputs.target == 'ephemeral'
     runs-on: ubuntu-latest
@@ -63,25 +67,69 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
+    env:
+      # Read by pipelines/bin/liquibase
+      DB_HOST: localhost
+      DB_NAME: app_db
+      DB_USER: app_user
+      DB_PASSWORD: ci_only_password
+      # Read by psql
+      PGHOST: localhost
+      PGDATABASE: app_db
+      PGUSER: app_user
+      PGPASSWORD: ci_only_password
     steps:
       - uses: actions/checkout@v4
 
-      - name: Update, roll back, update
+      - name: Set up Liquibase
         run: |
-          docker run --rm --network host -v "$PWD:/liquibase/changelog" "$LIQUIBASE_IMAGE" \
-            --search-path=/liquibase/changelog \
-            update-testing-rollback \
-            --changelog-file=schema/changelog.yaml \
-            --url=jdbc:postgresql://localhost:5432/app_db \
-            --username=app_user \
-            --password=ci_only_password
+          chmod +x pipelines/bin/liquibase
+          echo "$GITHUB_WORKSPACE/pipelines/bin" >> "$GITHUB_PATH"
+          docker pull --quiet "$LIQUIBASE_IMAGE"
 
-      - name: Smoke test
-        env:
-          PGHOST: localhost
-          PGDATABASE: app_db
-          PGUSER: app_user
-          PGPASSWORD: ci_only_password
+      - name: "1. Update: apply every changeset"
+        id: update
+        run: |
+          liquibase update
+          applied=$(psql -tAc "SELECT count(*) FROM databasechangelog")
+          echo "applied=$applied" >> "$GITHUB_OUTPUT"
+          echo "Applied $applied changesets"
+
+      - name: "2. Rollback: undo every changeset"
+        id: rollback
+        run: |
+          liquibase rollback-count --count=${{ steps.update.outputs.applied }}
+
+          # Rolling everything back must leave an empty schema: no changesets recorded,
+          # and no tables, views, indexes, sequences or routines left behind.
+          remaining=$(psql -tAc "SELECT count(*) FROM databasechangelog")
+          leftovers=$(psql -tAc "
+            SELECT string_agg(name, ', ') FROM (
+              SELECT c.relname AS name FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+              WHERE n.nspname = 'public' AND c.relname NOT LIKE 'databasechangelog%'
+              UNION ALL
+              SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+              WHERE n.nspname = 'public'
+            ) objects")
+          if [ "$remaining" != 0 ] || [ -n "$leftovers" ]; then
+            echo "::error::Rollback left $remaining changesets recorded and these objects behind: ${leftovers:-none}"
+            exit 1
+          fi
+          echo "Rolled back ${{ steps.update.outputs.applied }} changesets; the schema is empty again"
+
+      - name: "3. Update again: re-apply after rollback"
+        id: reapply
+        run: |
+          liquibase update
+          applied=$(psql -tAc "SELECT count(*) FROM databasechangelog")
+          if [ "$applied" != "${{ steps.update.outputs.applied }}" ]; then
+            echo "::error::Re-applied $applied changesets, expected ${{ steps.update.outputs.applied }}"
+            exit 1
+          fi
+          echo "Re-applied $applied changesets"
+
+      - name: "4. Smoke test: use the new schema"
+        id: smoke
         run: |
           psql -v ON_ERROR_STOP=1 <<'SQL'
           INSERT INTO customers (email, full_name) VALUES ('ada@example.com', 'Ada Lovelace')
@@ -103,46 +151,51 @@ jobs:
           SELECT * FROM customer_order_summary;
           SQL
 
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Test on throwaway Postgres"
+            echo "| Step | Result |"
+            echo "|---|---|"
+            echo "| Lint | ${{ needs.lint.result }} (risk level: ${{ needs.lint.outputs.risk-level }}) |"
+            echo "| 1. Update: apply every changeset | ${{ steps.update.outcome || 'not run' }} |"
+            echo "| 2. Rollback: undo every changeset | ${{ steps.rollback.outcome || 'not run' }} |"
+            echo "| 3. Update again: re-apply after rollback | ${{ steps.reapply.outcome || 'not run' }} |"
+            echo "| 4. Smoke test: use the new schema | ${{ steps.smoke.outcome || 'not run' }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   deploy:
+    name: Deploy to ${{ inputs.environment }}
     needs: lint
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'instance'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}
+    env:
+      # Read by pipelines/bin/liquibase
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT || '5432' }}
+      DB_NAME: ${{ inputs.db_name }}
+      DB_USER: ${{ inputs.db_owner }}
+      DB_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Check secrets are set
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
         run: |
           missing=0
-          for name in DB_HOST DB_OWNER_PASSWORD; do
-            if [ -z "${!name}" ]; then
-              echo "::error::Secret $name is not set in environment '${{ inputs.environment }}'"
-              missing=1
-            fi
-          done
+          [ -n "$DB_HOST" ] || { echo "::error::Secret DB_HOST is not set in environment '${{ inputs.environment }}'"; missing=1; }
+          [ -n "$DB_PASSWORD" ] || { echo "::error::Secret DB_OWNER_PASSWORD is not set in environment '${{ inputs.environment }}'"; missing=1; }
           exit $missing
 
-      - name: Liquibase status and update
-        env:
-          DB_HOST: ${{ secrets.DB_HOST }}
-          DB_PORT: ${{ secrets.DB_PORT || '5432' }}
-          DB_OWNER_PASSWORD: ${{ secrets.DB_OWNER_PASSWORD }}
-          DB_NAME: ${{ inputs.db_name }}
-          DB_OWNER: ${{ inputs.db_owner }}
+      - name: Set up Liquibase
         run: |
-          liquibase() {
-            docker run --rm -v "$PWD:/liquibase/changelog" "$LIQUIBASE_IMAGE" \
-              --search-path=/liquibase/changelog \
-              "$@" \
-              --changelog-file=schema/changelog.yaml \
-              --url="jdbc:postgresql://$DB_HOST:$DB_PORT/$DB_NAME" \
-              --username="$DB_OWNER" \
-              --password="$DB_OWNER_PASSWORD"
-          }
-          echo "::group::Pending changesets"
-          liquibase status --verbose
-          echo "::endgroup::"
-          liquibase update
+          chmod +x pipelines/bin/liquibase
+          echo "$GITHUB_WORKSPACE/pipelines/bin" >> "$GITHUB_PATH"
+          docker pull --quiet "$LIQUIBASE_IMAGE"
+
+      - name: "1. Show pending changesets"
+        run: liquibase status --verbose
+
+      - name: "2. Update: apply pending changesets"
+        run: liquibase update
