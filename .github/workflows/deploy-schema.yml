@@ -1,4 +1,5 @@
 # Applies the schema changelog (schema/changelog.yaml) to the application database with Liquibase.
+# Every run starts with the Lint schema workflow; nothing is applied unless lint passes.
 #
 # pull_request:                         applies the changelog to a throwaway Postgres, rolls it back, applies it again, then runs a smoke test.
 # workflow_dispatch, target=ephemeral:  same as pull_request.
@@ -14,6 +15,7 @@ on:
     paths:
       - "schema/**"
       - ".github/workflows/deploy-schema.yml"
+      - ".github/workflows/lint-schema.yml"
   workflow_dispatch:
     inputs:
       target:
@@ -40,7 +42,11 @@ env:
   LIQUIBASE_IMAGE: liquibase/liquibase:4.29
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint-schema.yml
+
   validate:
+    needs: lint
     if: github.event_name == 'pull_request' || inputs.target == 'ephemeral'
     runs-on: ubuntu-latest
     services:
@@ -98,6 +104,7 @@ jobs:
           SQL
 
   deploy:
+    needs: lint
     if: github.event_name == 'workflow_dispatch' && inputs.target == 'instance'
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}

@@ -31,11 +31,13 @@ database-devops-starter/
 
 The [Deploy schema](.github/workflows/deploy-schema.yml) workflow uses Liquibase to apply [schema/changelog.yaml](schema/changelog.yaml) to the application database. Only the files listed in the changelog run, top to bottom, so other SQL files in `schema/` are ignored. Liquibase records each applied changeset in its `DATABASECHANGELOG` table and skips it on later runs, so each deploy only applies new changes.
 
+Every run starts by calling the [Lint schema](#linting-schema-changes) workflow. The Liquibase jobs wait for it and are skipped if lint fails, so nothing is applied, even to a throwaway container, until the code passes the policy checks.
+
 | Trigger | What it does |
 |---|---|
-| Pull request touching `schema/` | Applies the changelog to a throwaway Postgres 16 container, rolls every change back, applies it again, then runs a smoke test against the sample objects |
-| Manual run with target `ephemeral` (default) | Same as a pull request. No secrets needed |
-| Manual run with target `instance` | Shows pending changes, then applies them to the instance for the chosen GitHub environment, connecting as the owner role |
+| Pull request touching `schema/` | Lints the changed files, then applies the changelog to a throwaway Postgres 16 container, rolls every change back, applies it again, and runs a smoke test against the sample objects |
+| Manual run with target `ephemeral` (default) | Lints every schema file, then does the same as a pull request. No secrets needed |
+| Manual run with target `instance` | Lints every schema file, shows pending changes, then applies them to the instance for the chosen GitHub environment, connecting as the owner role |
 
 `instance` runs need `DB_HOST` and `DB_OWNER_PASSWORD` (plus `DB_PORT` if not 5432) in the environment, and the database must already exist, so run [Bootstrap database](#bootstrapping-a-database) first.
 
@@ -76,7 +78,13 @@ CREATE TABLE legacy (...);
 
 ## Linting schema changes
 
-The [Lint schema](.github/workflows/lint-schema.yml) workflow checks the `.sql` files a pull request adds or changes under `schema/`. A manual run checks every file. It runs two layers of checks:
+The [Lint schema](.github/workflows/lint-schema.yml) workflow checks schema SQL files. It runs:
+
+- as the first job of every [Deploy schema](#deploying-schema-changes) run, checking the files a pull request adds or changes, or every file on a manual deploy
+- on its own for pull requests that change the lint code or rules (`pipelines/lint/`, `.squawk.toml`)
+- manually from Actions → Lint schema → Run workflow, checking every file
+
+It runs two layers of checks:
 
 - **Policy checks** ([pipelines/lint/lint-schema.sh](pipelines/lint/lint-schema.sh)) fail the PR:
   - a changeset without a `--rollback` (use `--rollback empty` when a change can't be undone)
@@ -85,7 +93,7 @@ The [Lint schema](.github/workflows/lint-schema.yml) workflow checks the `.sql` 
   - every [Squawk](https://squawkhq.com/docs/rules) rule, which covers table-locking `ALTER`s, index builds that block writes, dropped columns or tables, column type changes, new `NOT NULL` columns and more
   - a foreign key column with no index that starts with that column
 
-With no findings, `risk-level` is `low`. Later jobs can read it as `needs.lint.outputs.risk-level`, for example to require DBA review only for high-risk changes. The run summary shows the risk level and the number of policy violations.
+With no findings, `risk-level` is `low`. Jobs in Deploy schema, or any workflow that calls Lint schema, can read it as `needs.lint.outputs.risk-level`, for example to require DBA review only for high-risk changes. The run summary shows the risk level and the number of policy violations.
 
 ### Running it locally
 

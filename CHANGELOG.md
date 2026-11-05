@@ -29,6 +29,7 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - policy checks that fail the PR : changeset without a rollback, `CONCURRENTLY` without `runInTransaction:false`
     - risk checks that set `risk-level` to high : squawk rules (table-locking alters, blocking index builds, dropped columns or tables, ...) and foreign keys without an index
     - `risk-level` (low or high) job output for later jobs
+    - runs as the first job of `Deploy schema`, so nothing is applied until lint passes. runs on its own for changes to the lint code or rules
 - lint script, self-test and sample safe, risky and policy-violating changesets (`pipelines/lint/`)
 - squawk rule configuration (`.squawk.toml`)
 - readme section on linting, and on adding or disabling rules

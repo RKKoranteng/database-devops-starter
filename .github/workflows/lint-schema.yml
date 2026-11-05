@@ -1,17 +1,24 @@
 # Lints schema changes for risky migration patterns and policy violations.
 #
-# pull_request:       lints the .sql files the PR adds or changes under schema/.
+# workflow_call:      first job of Deploy schema, so nothing is deployed until lint passes.
+#                     Lints the files a PR changes, or every file on a manual deploy.
+# pull_request:       runs on its own only when the lint code or rules change; schema changes
+#                     are linted through Deploy schema.
 # workflow_dispatch:  lints every .sql file under schema/.
 #
 # Fails on policy violations (e.g. a changeset without a rollback).
-# Risky patterns don't fail the run; they set the job's risk-level output to high
+# Risky patterns don't fail the run; they set the risk-level output to high
 # so later jobs can require DBA review.
 name: Lint schema
 
 on:
+  workflow_call:
+    outputs:
+      risk-level:
+        description: "low or high"
+        value: ${{ jobs.lint.outputs.risk-level }}
   pull_request:
     paths:
-      - "schema/**"
       - "pipelines/lint/**"
       - ".squawk.toml"
       - ".github/workflows/lint-schema.yml"
