@@ -1,2 +1,6 @@
 # ignore gh scripts
 *gh-scripts/*
+
+# personal Claude Code settings and hooks
+.claude/settings.local.json
+.claude/hooks/

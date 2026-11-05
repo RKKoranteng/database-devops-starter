@@ -9,6 +9,8 @@
 # Fails on policy violations (e.g. a changeset without a rollback).
 # Risky patterns don't fail the run; they set the risk-level output to high
 # so later jobs can require DBA review.
+#
+# To add or disable rules, see docs/README.md.
 name: Lint schema
 
 on:

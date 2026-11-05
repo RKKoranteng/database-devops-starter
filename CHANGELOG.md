@@ -33,8 +33,11 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
     - runs as the first job of `Deploy schema`, so nothing is applied until lint passes. runs on its own for changes to the lint code or rules
 - lint script, self-test and sample safe, risky and policy-violating changesets (`pipelines/lint/`). the self-test checks that every rule fires on its sample
 - `pipelines/lint/disabled-rules.txt` to turn off lint rules
+- `docs/README.md` : step-by-step guide to disabling, adding and changing lint rules, with a worked example
 - squawk rule configuration (`.squawk.toml`)
 - readme section on linting, and on adding or disabling rules
+- `docs/` directory in the readme tree
+- ignore personal claude code settings and hooks (`.claude/settings.local.json`, `.claude/hooks/`)
 
 ## [2026.10.31]
 

@@ -8,6 +8,7 @@ A starter template for DBA teams who want to ship database changes the same way 
 database-devops-starter/
 ├── .github/
 │   └── workflows/    # GitHub Actions workflows
+├── docs/             # Guides, such as how to add or disable lint rules
 ├── infra/            # Infrastructure specific code
 │   └── postgres/     # Liquibase changelog that creates the owner role and database
 ├── pipelines/        # Pipelines for validating, deploying and rolling back changes
@@ -122,17 +123,12 @@ Without Squawk installed, `SKIP_SQUAWK=1 bash pipelines/lint/lint-schema.sh <fil
 
 ### Adding or disabling rules
 
-- **Turn off one of this repo's rules:** add its name to [pipelines/lint/disabled-rules.txt](pipelines/lint/disabled-rules.txt), with a comment saying why. Disabling a policy rule lets those changes through without failing the PR, so do it only with team agreement.
-- **Turn off a Squawk rule:** add its name to `excluded_rules` in [.squawk.toml](.squawk.toml), with a comment saying why. `prefer-robust-stmts` is already off, because this repo deliberately avoids `IF NOT EXISTS` (see [Objects that already exist](#objects-that-already-exist)).
-- **Add or change a rule:**
-  - [pipelines/lint/changesets.awk](pipelines/lint/changesets.awk) reads each file and prints a finding for each match. Changeset-level rules are near the top, and statement-level rules are in `check_statement`.
-  - [lint-schema.sh](pipelines/lint/lint-schema.sh) turns each finding into an error (policy) or a warning (risk) with a message. Add a `case` entry for a new rule.
-- **Test your change:** run `bash pipelines/lint/test-lint.sh`. The workflow also runs it before every lint. It checks the samples in [pipelines/lint/samples/](pipelines/lint/samples/):
-  - `safe.sql` comes out low.
-  - `risky.sql` comes out high, and every risk rule fires on it.
-  - `policy_violation.sql` fails, and both policy rules fire on it.
+Step-by-step instructions, with a worked example, are in [docs/README.md](docs/README.md). In short:
 
-  When you add a rule, add a changeset that triggers it to the matching sample, and add the rule name to the list in `test-lint.sh`.
+- **Turn off one of this repo's rules:** add its name to [pipelines/lint/disabled-rules.txt](pipelines/lint/disabled-rules.txt) with a comment saying why, and remove it from the expected list in `test-lint.sh`.
+- **Turn off a Squawk rule:** add its name to `excluded_rules` in [.squawk.toml](.squawk.toml) with a comment saying why. `prefer-robust-stmts` is already off, because this repo deliberately avoids `IF NOT EXISTS` (see [Objects that already exist](#objects-that-already-exist)).
+- **Add a rule:** detect it in `changesets.awk`, give it a message in `lint-schema.sh`, add a sample changeset that triggers it, and add it to the expected list in `test-lint.sh`.
+- **Test:** `SKIP_SQUAWK=1 bash pipelines/lint/test-lint.sh`. The workflow runs the same self-test before every lint, so a rule that stops firing fails the PR.
 
 ## Bootstrapping a database
 

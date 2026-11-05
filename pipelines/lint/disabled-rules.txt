@@ -1,4 +1,5 @@
 # Rules from lint-schema.sh to skip for every file, one rule name per line.
-# Squawk rules are turned off in .squawk.toml instead.
+# Also remove the rule from the expected list in test-lint.sh, or the self-test fails.
+# Squawk rules are turned off in .squawk.toml instead. See docs/README.md.
 # Say why next to each rule you disable, for example:
 #   blocking-index   # all our tables are small enough to index without CONCURRENTLY
