@@ -84,14 +84,30 @@ The [Lint schema](.github/workflows/lint-schema.yml) workflow checks schema SQL 
 - on its own for pull requests that change the lint code or rules (`pipelines/lint/`, `.squawk.toml`)
 - manually from Actions → Lint schema → Run workflow, checking every file
 
-It runs two layers of checks:
+[pipelines/lint/lint-schema.sh](pipelines/lint/lint-schema.sh) has its own rules, and also runs [Squawk](https://squawkhq.com/docs/rules), a Postgres migration linter, as a second layer.
 
-- **Policy checks** ([pipelines/lint/lint-schema.sh](pipelines/lint/lint-schema.sh)) fail the PR:
-  - a changeset without a `--rollback` (use `--rollback empty` when a change can't be undone)
-  - `CREATE`/`DROP INDEX CONCURRENTLY` in a changeset without `runInTransaction:false`
-- **Risk checks** set the job's `risk-level` output to `high` but don't fail the PR:
-  - every [Squawk](https://squawkhq.com/docs/rules) rule, which covers table-locking `ALTER`s, index builds that block writes, dropped columns or tables, column type changes, new `NOT NULL` columns and more
-  - a foreign key column with no index that starts with that column
+**Policy rules** fail the PR:
+
+| Rule | Flags |
+|---|---|
+| `missing-rollback` | A changeset without a `--rollback`. Use `--rollback empty` when a change can't be undone |
+| `concurrent-in-transaction` | `CREATE`/`DROP INDEX CONCURRENTLY` in a changeset without `runInTransaction:false` |
+
+**Risk rules** set the job's `risk-level` output to `high` but don't fail the PR:
+
+| Rule | Flags | Why it's risky |
+|---|---|---|
+| `drop-table` | `DROP TABLE` | Data loss; breaks code still using the table |
+| `drop-column` | `ALTER TABLE ... DROP [COLUMN]` | Data loss; breaks code still using the column |
+| `change-column-type` | `ALTER COLUMN ... TYPE` | Usually rewrites the table under an exclusive lock |
+| `set-not-null` | `ALTER COLUMN ... SET NOT NULL` | Scans the table under an exclusive lock |
+| `validating-constraint` | `ADD FOREIGN KEY` or `CHECK` without `NOT VALID` | Scans the table under lock to validate |
+| `unique-constraint-without-index` | `ADD UNIQUE` or `PRIMARY KEY` without `USING INDEX` | Builds the index under an exclusive lock |
+| `blocking-index` | `CREATE INDEX` without `CONCURRENTLY` | Blocks writes while the index builds. Not flagged for a table created in the same changeset |
+| `foreign-key-without-index` | A foreign key column with no index starting with it | Deletes and key updates on the referenced table scan this table |
+| Squawk rules | See the [Squawk rule list](https://squawkhq.com/docs/rules) | Overlaps the rules above and adds more, such as renames and new columns with volatile defaults |
+
+Changesets with `splitStatements:false` (procedures, functions and other plpgsql bodies) are not checked for risk rules, because their statements are code that runs later, not schema changes.
 
 With no findings, `risk-level` is `low`. Jobs in Deploy schema, or any workflow that calls Lint schema, can read it as `needs.lint.outputs.risk-level`, for example to require DBA review only for high-risk changes. The run summary shows the risk level and the number of policy violations.
 
@@ -102,13 +118,21 @@ npm install --global squawk-cli@1
 bash pipelines/lint/lint-schema.sh schema/tables/orders.sql
 ```
 
-Without Squawk installed, `SKIP_SQUAWK=1 bash pipelines/lint/lint-schema.sh <files>` runs only the policy and foreign key checks.
+Without Squawk installed, `SKIP_SQUAWK=1 bash pipelines/lint/lint-schema.sh <files>` runs only this repo's own rules. Each finding is labelled with its rule name, e.g. `[drop-column]`.
 
 ### Adding or disabling rules
 
+- **Turn off one of this repo's rules:** add its name to [pipelines/lint/disabled-rules.txt](pipelines/lint/disabled-rules.txt), with a comment saying why. Disabling a policy rule lets those changes through without failing the PR, so do it only with team agreement.
 - **Turn off a Squawk rule:** add its name to `excluded_rules` in [.squawk.toml](.squawk.toml), with a comment saying why. `prefer-robust-stmts` is already off, because this repo deliberately avoids `IF NOT EXISTS` (see [Objects that already exist](#objects-that-already-exist)).
-- **Add or change a policy or foreign key check:** [pipelines/lint/changesets.awk](pipelines/lint/changesets.awk) finds changesets, rollbacks and foreign keys in each file, and [lint-schema.sh](pipelines/lint/lint-schema.sh) decides what each finding means.
-- **Test your change:** the samples in [pipelines/lint/samples/](pipelines/lint/samples/) must keep their expected result: `safe.sql` low, `risky.sql` high, `policy_violation.sql` fails. Run `bash pipelines/lint/test-lint.sh`, which the workflow also runs on every lint. Add a sample when you add a rule.
+- **Add or change a rule:**
+  - [pipelines/lint/changesets.awk](pipelines/lint/changesets.awk) reads each file and prints a finding for each match. Changeset-level rules are near the top, and statement-level rules are in `check_statement`.
+  - [lint-schema.sh](pipelines/lint/lint-schema.sh) turns each finding into an error (policy) or a warning (risk) with a message. Add a `case` entry for a new rule.
+- **Test your change:** run `bash pipelines/lint/test-lint.sh`. The workflow also runs it before every lint. It checks the samples in [pipelines/lint/samples/](pipelines/lint/samples/):
+  - `safe.sql` comes out low.
+  - `risky.sql` comes out high, and every risk rule fires on it.
+  - `policy_violation.sql` fails, and both policy rules fire on it.
+
+  When you add a rule, add a changeset that triggers it to the matching sample, and add the rule name to the list in `test-lint.sh`.
 
 ## Bootstrapping a database
 

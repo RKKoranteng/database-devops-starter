@@ -27,10 +27,12 @@ and this project uses [Calendar Versioning](https://calver.org/) (YYYY.MM.DD).
 - readme section on deploying schema changes and adding new ones
 - `Lint schema` github actions workflow for changed schema files : 
     - policy checks that fail the PR : changeset without a rollback, `CONCURRENTLY` without `runInTransaction:false`
-    - risk checks that set `risk-level` to high : squawk rules (table-locking alters, blocking index builds, dropped columns or tables, ...) and foreign keys without an index
+    - risk checks that set `risk-level` to high, built into the lint script so they work without squawk : dropped tables or columns, column type changes, `SET NOT NULL`, constraints added without `NOT VALID`, unique or primary keys added without `USING INDEX`, `CREATE INDEX` without `CONCURRENTLY`, foreign keys without an index
+    - squawk rules as a second layer of risk checks
     - `risk-level` (low or high) job output for later jobs
     - runs as the first job of `Deploy schema`, so nothing is applied until lint passes. runs on its own for changes to the lint code or rules
-- lint script, self-test and sample safe, risky and policy-violating changesets (`pipelines/lint/`)
+- lint script, self-test and sample safe, risky and policy-violating changesets (`pipelines/lint/`). the self-test checks that every rule fires on its sample
+- `pipelines/lint/disabled-rules.txt` to turn off lint rules
 - squawk rule configuration (`.squawk.toml`)
 - readme section on linting, and on adding or disabling rules
 
